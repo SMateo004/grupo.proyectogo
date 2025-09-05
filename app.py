@@ -138,4 +138,15 @@ def plot_times(df):
     plt.legend(title="Proceso")
     plt.grid(True)
     st.pyplot(fig)
+def plot_histogram(df):
+    """Dibuja histograma de tiempos."""
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.hist(df['tiempoMs'], bins=20, color='skyblue', edgecolor='black')
+    plt.xlabel("Tiempo (ms)")
+    plt.ylabel("Frecuencia")
+    plt.title("Histograma de Tiempos")
+    plt.grid(True)
+    st.pyplot(fig)
+    
+
 
