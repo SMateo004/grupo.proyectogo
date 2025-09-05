@@ -1,208 +1,344 @@
-import os
-import time
-import json
-import random
-import requests
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
+package main
 
-st.set_page_config(page_title="Simulador de Procesos", layout="wide")
-st.title("Simulador de Procesos ")
+import (
+	"context"
+	"fmt"
+	"math"
+	"math/rand"
+	"sort"
+	"sync"
+	"time"
+)
 
-st.markdown("""
-Esta app puede funcionar de **dos formas**:
-1) **Conectar a una API Go** pública (endpoint `/simulate`) — recomendado para clases.
-2) **Modo local (mock)** si no tienes la API: se simula el tiempo de ejecución en Python.
-""")
+type ProcesoSimulado struct {
+	ID              int
+	Nombre          string
+	CargaBase       int // carga base multiplicativa
+	MemoriaEstimada int
+	JitterMax       time.Duration // variación aleatoria
+}
 
-# Config de API
-default_api = st.secrets.get("API_URL", "")
-api_url = st.text_input("API URL (opcional, deja vacío para modo local/mock)", value=default_api, placeholder="https://tu-api-go.onrender.com/simulate")
+type Instruccion struct {
+	ID     int
+	Accion string // "iniciar", "detener"
+}
 
-with st.sidebar:
-    st.header("Parámetros")
-    rondas = st.number_input("Rondas", 1, 100, 5)
-    timeout_s = st.number_input("Timeout por ronda (seg)", 0, 60, 2)
-    nproc = st.number_input("N° de procesos", 1, 20, 3)
+type Tarea struct {
+	ProcesoID int
+	Ronda     int
+	Carga     int // carga específica de la tarea (se multiplica por CargaBase)
+}
 
-    st.caption("Parámetros por proceso")
-    procesos = []
-    for i in range(1, int(nproc)+1):
-        st.subheader(f"Proceso {i}")
-        nombre = st.text_input(f"Nombre {i}", f"Proceso_{i}", key=f"nombre_{i}")
-        carga_base = st.slider(f"Carga base {i}", 1, 5, 2, key=f"cb_{i}")
-        mem = st.slider(f"Memoria estimada (MB) {i}", 50, 500, 100, key=f"mem_{i}")
-        jitter = st.slider(f"Jitter máx (ms) {i}", 0, 1500, 300, key=f"jit_{i}")
-        procesos.append({
-            "id": i, "nombre": nombre, "cargaBase": int(carga_base),
-            "memoriaEstimadamb": int(mem), "jitterMaxMs": int(jitter)
-        })
+type Resultado struct {
+	ProcesoID int
+	Nombre    string
+	Ronda     int
+	Memoria   int
+	Tiempo    time.Duration
+	OK        bool
+	Err       string
+}
 
-run = st.button("Ejecutar simulación")
+type Confirmacion struct {
+	ProcesoID  int
+	Ronda      int
+	Accion     string
+	Completado bool
+}
 
-def run_local_mock(rondas:int, timeout_s:int, procesos:list):
-    """Simula localmente la ejecución (sin API Go). Devuelve estructura parecida a la API."""
-    resultados = []
-    rng = random.Random(1234)
-    for r in range(1, int(rondas)+1):
-        for p in procesos:
-            carga = rng.randint(1, 5)
-            base_ms = p["cargaBase"] * carga * 100
-            jitter_ms = rng.randint(0, p["jitterMaxMs"])
-            dur_ms = base_ms + jitter_ms
-            # "Aplicar" timeout si corresponde
-            ok = True
-            err = ""
-            if timeout_s > 0 and dur_ms > timeout_s * 1000:
-                ok = False
-                err = "timeout"
-                dur_ms = 0
-            # Simular (opcional): dormir una cantidad mínima para no demorar demasiado
-            time.sleep(min(dur_ms, 50) / 1000.0)
-            resultados.append({
-                "procesoId": p["id"],
-                "nombre": p["nombre"],
-                "ronda": r,
-                "memoriaMB": p["memoriaEstimadamb"],
-                "tiempoMs": dur_ms,
-                "ok": ok,
-                "err": err,
-            })
-    # Agregar métricas
-    porProceso = {}
-    all_times = []
-    for row in resultados:
-        if row["ok"]:
-            porProceso.setdefault(row["procesoId"], {"count":0,"avgMs":0,"p50Ms":0,"p95Ms":0,"minMs":0,"maxMs":0,"_all":[]})
-            porProceso[row["procesoId"]]["_all"].append(row["tiempoMs"])
-            all_times.append(row["tiempoMs"])
-    import math
-    def finalize(stats):
-        if not stats["_all"]:
-            return
-        arr = sorted(stats["_all"])
-        stats["count"] = len(arr)
-        stats["avgMs"] = sum(arr)/len(arr)
-        stats["minMs"] = arr[0]
-        stats["maxMs"] = arr[-1]
-        def perc(a, p):
-            if not a: return 0
-            if p<=0: return a[0]
-            if p>=100: return a[-1]
-            pos = (p/100.0) * (len(a)-1)
-            i = int(math.floor(pos))
-            f = pos - i
-            if i+1 < len(a):
-                return a[i]*(1-f) + a[i+1]*f
-            return a[i]
-        stats["p50Ms"] = perc(arr, 50)
-        stats["p95Ms"] = perc(arr, 95)
-        del stats["_all"]
-    for k,v in porProceso.items():
-        v.setdefault("_all", [])
-        finalize(v)
-    global_stats = {"count":0,"avgMs":0,"p50Ms":0,"p95Ms":0,"minMs":0,"maxMs":0}
-    if all_times:
-        arr = sorted(all_times)
-        global_stats["count"] = len(arr)
-        global_stats["avgMs"] = sum(arr)/len(arr)
-        global_stats["minMs"] = arr[0]
-        global_stats["maxMs"] = arr[-1]
-        import math
-        def perc(a,p):
-            if not a: return 0
-            if p<=0: return a[0]
-            if p>=100: return a[-1]
-            pos = (p/100.0) * (len(a)-1)
-            i = int(math.floor(pos))
-            f = pos - i
-            if i+1 < len(a):
-                return a[i]*(1-f) + a[i+1]*f
-            return a[i]
-        global_stats["p50Ms"] = perc(arr, 50)
-        global_stats["p95Ms"] = perc(arr, 95)
-    return {"resultados": resultados, "porProceso": porProceso, "global": global_stats}
+// --- Utilidades de métricas ---
 
-if run:
-    payload = {"rondas": int(rondas), "timeoutRondaS": int(timeout_s), "procesos": procesos}
-    if api_url.strip():
-        st.info(f"Llamando API: {api_url}")
-        try:
-            resp = requests.post(api_url.strip(), json=payload, timeout=120)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            st.error(f"Error con la API ({e}). Usando modo local/mock…")
-            data = run_local_mock(rondas, timeout_s, procesos)
-    else:
-        st.warning("API vacía: usando modo local/mock.")
-        data = run_local_mock(rondas, timeout_s, procesos)
+type Stats struct {
+	Count   int
+	AvgMs   float64
+	P50Ms   float64
+	P95Ms   float64
+	MaxMs   float64
+	MinMs   float64
+	SumMs   float64
+	Samples []float64
+}
 
-    df = pd.DataFrame(data.get("resultados", []))
-    if df.empty:
-        st.warning("Sin resultados.")
-    else:
-        st.subheader("Resultados por ronda")
-        df_view = df[["procesoId", "nombre", "ronda", "memoriaMB", "tiempoMs", "ok", "err"]]
-        st.dataframe(df_view, use_container_width=True)
+func (s *Stats) add(d time.Duration) {
+	ms := float64(d.Milliseconds())
+	s.Samples = append(s.Samples, ms)
+	s.SumMs += ms
+	s.Count++
+	if s.Count == 1 {
+		s.MinMs, s.MaxMs = ms, ms
+	} else {
+		if ms < s.MinMs {
+			s.MinMs = ms
+		}
+		if ms > s.MaxMs {
+			s.MaxMs = ms
+		}
+	}
+}
 
-        st.subheader("Promedio por proceso (ms)")
-        ok_df = df[df["ok"]]
-        if not ok_df.empty:
-            avg_df = ok_df.groupby(["procesoId", "nombre"])["tiempoMs"].mean().reset_index()
-            fig1, ax1 = plt.subplots()
-            ax1.bar(avg_df["nombre"], avg_df["tiempoMs"])
-            ax1.set_xlabel("Proceso")
-            ax1.set_ylabel("Tiempo promedio (ms)")
-            ax1.set_title("Promedio por Proceso")
-            st.pyplot(fig1)
+func (s *Stats) finalize() {
+	if s.Count == 0 {
+		return
+	}
+	s.AvgMs = s.SumMs / float64(s.Count)
+	sort.Float64s(s.Samples)
+	s.P50Ms = percentile(s.Samples, 50)
+	s.P95Ms = percentile(s.Samples, 95)
+}
 
-            st.subheader("Tiempos por ronda (ms)")
-            fig2, ax2 = plt.subplots()
-            for name, sub in ok_df.groupby("nombre"):
-                ax2.plot(sub["ronda"], sub["tiempoMs"], marker="o", label=name)
-            ax2.set_xlabel("Ronda")
-            ax2.set_ylabel("Tiempo (ms)")
-            ax2.set_title("Evolución por Ronda")
-            ax2.legend()
-            st.pyplot(fig2)
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 100 {
+		return sorted[len(sorted)-1]
+	}
+	pos := (p / 100.0) * float64(len(sorted)-1)
+	i := int(math.Floor(pos))
+	f := pos - float64(i)
+	if i+1 < len(sorted) {
+		return sorted[i]*(1-f) + sorted[i+1]*f
+	}
+	return sorted[i]
+}
 
-        st.subheader("Métricas")
-        por_proc = data.get("porProceso", {})
-        rows = []
-        for pid, stats in por_proc.items():
-            rows.append({"procesoId": int(pid), **stats})
-        if rows:
-            mdf = pd.DataFrame(rows).sort_values("procesoId")
-            st.dataframe(mdf, use_container_width=True)
-        g = data.get("global")
-        if g and g.get("count", 0) > 0:
-            st.success(f"GLOBAL → n={g['count']}  avg={g['avgMs']:.1f}ms  "
-                       f"p50={g['p50Ms']:.1f}ms  p95={g['p95Ms']:.1f}ms  "
-                       f"min={g['minMs']:.1f}ms  max={g['maxMs']:.1f}ms")
-import matplotlib.dates as mdates
-def plot_times(df):
-    """Dibuja gráfico de tiempos por ronda."""
-    fig, ax = plt.subplots(figsize=(10, 4))
-    for key, grp in df.groupby('nombre'):
-        ax = grp.plot(ax=ax, kind='line', x='ronda', y='tiempoMs', label=key, marker='o')
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
-    plt.xlabel("Ronda")
-    plt.ylabel("Tiempo (ms)")
-    plt.title("Tiempos por Ronda y Proceso")
-    plt.legend(title="Proceso")
-    plt.grid(True)
-    st.pyplot(fig)
-def plot_avg_times(df):
-    """Dibuja gráfico de tiempos promedio por proceso."""
-    avg_df = df.groupby('nombre')['tiempoMs'].mean().reset_index()
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(avg_df['nombre'], avg_df['tiempoMs'], color='skyblue')
-    plt.xlabel("Proceso")
-    plt.ylabel("Tiempo Promedio (ms)")
-    plt.title("Tiempo Promedio por Proceso")
-    plt.xticks(rotation=45)
-    plt.grid(axis='y')
-    st.pyplot(fig)
+// --- Proceso ---
+
+func simularProceso(
+	p ProcesoSimulado,
+	ctx context.Context,
+	instrCh <-chan Instruccion,
+	tareasCh <-chan Tarea,
+	resultadosCh chan<- Resultado,
+	confirmCh chan<- Confirmacion,
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Printf("[Proceso %s] cancelado por contexto\n", p.Nombre)
+			return
+
+		case instr, ok := <-instrCh:
+			if !ok {
+				return
+			}
+			switch instr.Accion {
+			case "detener":
+				fmt.Printf("Proceso %s (%d) detenido.\n", p.Nombre, p.ID)
+				return
+			}
+
+		case tarea, ok := <-tareasCh:
+			if !ok {
+				return
+			}
+			if tarea.ProcesoID != p.ID {
+				// Ignorar tareas no destinadas a este proceso (defensivo)
+				continue
+			}
+
+			// Simular trabajo
+			start := time.Now()
+			// tiempo = (cargaBase * cargaTarea * 100ms) + jitter
+			base := time.Duration(p.CargaBase*tarea.Carga) * 100 * time.Millisecond
+			jitter := time.Duration(rand.Int63n(int64(p.JitterMax)))
+			time.Sleep(base + jitter)
+			elapsed := time.Since(start)
+
+			// Emitir resultado
+			resultadosCh <- Resultado{
+				ProcesoID: p.ID,
+				Nombre:    p.Nombre,
+				Ronda:     tarea.Ronda,
+				Memoria:   p.MemoriaEstimada,
+				Tiempo:    elapsed,
+				OK:        true,
+			}
+
+			// Confirmar
+			confirmCh <- Confirmacion{
+				ProcesoID:  p.ID,
+				Ronda:      tarea.Ronda,
+				Accion:     "tarea",
+				Completado: true,
+			}
+		}
+	}
+}
+
+// --- Coordinador ---
+
+func coordinador(
+	procesos []ProcesoSimulado,
+	rondas int,
+	timeoutRonda time.Duration, // si es 0, sin timeout
+	instr map[int]chan Instruccion,
+	tareas map[int]chan Tarea,
+	resultados <-chan Resultado,
+	confirm <-chan Confirmacion,
+) {
+
+	// Enviar rondas de trabajo
+	for r := 1; r <= rondas; r++ {
+		fmt.Printf("\n=== Ronda %d ===\n", r)
+
+		// Contexto de timeout por ronda (opcional)
+		var (
+			ctx  context.Context
+			stop context.CancelFunc
+		)
+		if timeoutRonda > 0 {
+			ctx, stop = context.WithTimeout(context.Background(), timeoutRonda)
+		} else {
+			ctx, stop = context.WithCancel(context.Background())
+		}
+
+		// Despachar 1 tarea por proceso en esta ronda
+		for _, p := range procesos {
+			carga := rand.Intn(5) + 1 // 1..5 (puedes parametrizarlo)
+			tareas[p.ID] <- Tarea{ProcesoID: p.ID, Ronda: r, Carga: carga}
+		}
+
+		// Esperar resultados de la ronda
+		pendientes := len(procesos)
+		for pendientes > 0 {
+			select {
+			case <-ctx.Done():
+				fmt.Printf("[Coordinador] Timeout en ronda %d, continúo con lo recibido.\n", r)
+				pendientes = 0 // salimos de la espera de la ronda
+			case res := <-resultados:
+				if res.Ronda == r {
+					fmt.Printf("Resultado: P%d|%s | Ronda %d | %v | Mem: %dMB\n",
+						res.ProcesoID, res.Nombre, res.Ronda, res.Tiempo, res.Memoria)
+					pendientes--
+				} else {
+					// Resultado tardío de otra ronda; lo imprimimos igual
+					fmt.Printf("Resultado tardío: P%d|%s | Ronda %d | %v\n",
+						res.ProcesoID, res.Nombre, res.Ronda, res.Tiempo)
+				}
+			case c := <-confirm:
+				_ = c // aquí podríamos validar por ID/ronda si queremos
+			}
+		}
+		stop()
+	}
+
+	// Orden de parada
+	for _, p := range procesos {
+		instr[p.ID] <- Instruccion{ID: p.ID, Accion: "detener"}
+	}
+
+	// Cerrar canales de instrucciones/tareas para que terminen los procesos
+	for _, ch := range instr {
+		close(ch)
+	}
+	for _, ch := range tareas {
+		close(ch)
+	}
+}
+
+// --- Agregador de métricas ---
+
+func recolectorMetricas(
+	wg *sync.WaitGroup,
+	resultados <-chan Resultado,
+	done chan<- map[int]*Stats,
+) {
+	defer wg.Done()
+
+	porProceso := map[int]*Stats{}
+	global := &Stats{}
+
+	for res := range resultados {
+		if res.OK {
+			if porProceso[res.ProcesoID] == nil {
+				porProceso[res.ProcesoID] = &Stats{}
+			}
+			porProceso[res.ProcesoID].add(res.Tiempo)
+			global.add(res.Tiempo)
+		}
+	}
+
+	// Finalizar stats
+	for _, st := range porProceso {
+		st.finalize()
+	}
+	global.finalize()
+
+	// Empaquetar resultado (id 0 = global)
+	porProceso[0] = global
+	done <- porProceso
+	close(done)
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano())
+
+	// --- Configuración ---
+	rondas := 7
+
+	timeoutRonda := 2 * time.Second // pon 0 para sin timeout
+
+	procesos := []ProcesoSimulado{
+		{ID: 1, Nombre: "Proceso_A", CargaBase: rand.Intn(3) + 1, MemoriaEstimada: rand.Intn(100) + 50, JitterMax: 200 * time.Millisecond},
+		{ID: 2, Nombre: "Proceso_B", CargaBase: rand.Intn(3) + 1, MemoriaEstimada: rand.Intn(100) + 50, JitterMax: 200 * time.Millisecond},
+		{ID: 3, Nombre: "Proceso_C", CargaBase: rand.Intn(3) + 1, MemoriaEstimada: rand.Intn(100) + 50, JitterMax: 300 * time.Millisecond},
+	}
+
+	// --- Canales ---
+	instr := make(map[int]chan Instruccion, len(procesos))
+	tareas := make(map[int]chan Tarea, len(procesos))
+	resultados := make(chan Resultado, 128)
+	confirm := make(chan Confirmacion, 128)
+
+	// --- Lanzar procesos ---
+	var wgProc sync.WaitGroup
+	ctxGlobal, cancel := context.WithCancel(context.Background())
+	for _, p := range procesos {
+		instr[p.ID] = make(chan Instruccion, 2)
+		tareas[p.ID] = make(chan Tarea, 8)
+		wgProc.Add(1)
+		go simularProceso(p, ctxGlobal, instr[p.ID], tareas[p.ID], resultados, confirm, &wgProc)
+	}
+
+	// --- Recolector de métricas ---
+	var wgRec sync.WaitGroup
+	doneStats := make(chan map[int]*Stats, 1)
+	wgRec.Add(1)
+	go recolectorMetricas(&wgRec, resultados, doneStats)
+
+	// --- Coordinador ---
+	coordinador(procesos, rondas, timeoutRonda, instr, tareas, resultados, confirm)
+
+	// Cerrar salidas de procesos y esperar
+	wgProc.Wait()
+	cancel() // por si acaso
+	close(resultados)
+	close(confirm)
+
+	// Esperar agregación de métricas
+	wgRec.Wait()
+	statsPorProceso := <-doneStats
+
+	// --- Reporte ---
+	fmt.Println("\n====== MÉTRICAS ======")
+	for _, p := range procesos {
+		if st := statsPorProceso[p.ID]; st != nil && st.Count > 0 {
+			fmt.Printf("[%s] n=%d avg=%.1fms p50=%.1fms p95=%.1fms min=%.1fms max=%.1fms\n",
+				p.Nombre, st.Count, st.AvgMs, st.P50Ms, st.P95Ms, st.MinMs, st.MaxMs)
+		} else {
+			fmt.Printf("[%s] sin datos\n", p.Nombre)
+		}
+	}
+	if g := statsPorProceso[0]; g != nil && g.Count > 0 {
+		fmt.Printf("[GLOBAL] n=%d avg=%.1fms p50=%.1fms p95=%.1fms min=%.1fms max=%.1fms\n",
+			g.Count, g.AvgMs, g.P50Ms, g.P95Ms, g.MinMs, g.MaxMs)
+	}
+	fmt.Println("Simulación completada.")
+}
