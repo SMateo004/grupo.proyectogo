@@ -1,4 +1,3 @@
-
 import os
 import time
 import json
@@ -8,7 +7,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Simulador de Procesos ", layout="wide")
+st.set_page_config(page_title="Simulador de Procesos", layout="wide")
 st.title("Simulador de Procesos ")
 
 st.markdown("""
@@ -195,4 +194,15 @@ def plot_times(df):
     plt.title("Tiempos por Ronda y Proceso")
     plt.legend(title="Proceso")
     plt.grid(True)
+    st.pyplot(fig)
+def plot_avg_times(df):
+    """Dibuja gráfico de tiempos promedio por proceso."""
+    avg_df = df.groupby('nombre')['tiempoMs'].mean().reset_index()
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(avg_df['nombre'], avg_df['tiempoMs'], color='skyblue')
+    plt.xlabel("Proceso")
+    plt.ylabel("Tiempo Promedio (ms)")
+    plt.title("Tiempo Promedio por Proceso")
+    plt.xticks(rotation=45)
+    plt.grid(axis='y')
     st.pyplot(fig)
