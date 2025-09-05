@@ -4,7 +4,7 @@ import json
 import random
 import requests
 import streamlit as st
-import pandas as pd
+#import pandas as pd
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Simulador de Procesos", layout="wide")
@@ -144,9 +144,26 @@ def plot_histogram(df):
     ax.hist(df['tiempoMs'], bins=20, color='skyblue', edgecolor='black')
     plt.xlabel("Tiempo (ms)")
     plt.ylabel("Frecuencia")
-    plt.title("Histograma de Tiempos")
+    plt.title("Histograma en barra Tiempos")
     plt.grid(True)
     st.pyplot(fig)
-    
+def plot_regresion(df):
+    """Dibuja gráfico de regresión (tiempo vs memoria)."""
+    import numpy as np
+    from sklearn.linear_model import LinearRegression
+    fig, ax = plt.subplots(figsize=(10, 4))
+    X = df['memoriaMB'].values.reshape(-1, 1)
+    y = df['tiempoMs'].values
+    model = LinearRegression()
+    model.fit(X, y)
+    y_pred = model.predict(X)
+    ax.scatter(df['memoriaMB'], df['tiempoMs'], color='blue', label='Datos')
+    ax.plot(df['memoriaMB'], y_pred, color='red', linewidth=2, label='Regresión')
+    plt.xlabel("Memoria Estimada (MB)")
+    plt.ylabel("Tiempo (ms)")
+    plt.title("Regresión Lineal: Tiempo vs Memoria")
+    plt.legend()
+    plt.grid(True)
+    st.pyplot(fig)
 
 
