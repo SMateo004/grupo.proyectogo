@@ -7,8 +7,8 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Simulador de Procesos (Go + Streamlit)", layout="wide")
-st.title("Simulador de Procesos – Go API (opcional) + Streamlit UI")
+st.set_page_config(page_title="Simulador de Procesos", layout="wide")
+st.title("Simulador de Procesos – Grupo 4, Proyecto 7")
 
 st.markdown("""
 Esta app puede funcionar de **dos formas**:
