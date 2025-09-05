@@ -1,14 +1,15 @@
+
 import os
 import time
 import json
 import random
 import requests
 import streamlit as st
-#import pandas as pd
+import pandas as pd
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Simulador de Procesos", layout="wide")
-st.title("Simulador de Procesos – Grupo 4, Proyecto 7")
+st.set_page_config(page_title="Simulador de Procesos (Go + Streamlit)", layout="wide")
+st.title("Simulador de Procesos – Go API (opcional) + Streamlit UI")
 
 st.markdown("""
 Esta app puede funcionar de **dos formas**:
@@ -18,14 +19,13 @@ Esta app puede funcionar de **dos formas**:
 
 # Config de API
 default_api = st.secrets.get("API_URL", "")
-api_url = st.text_input("Se debe mostrar la API", value=default_api, placeholder="https://tu-api-go.onrender.com/simulate")
+api_url = st.text_input("API URL (opcional, deja vacío para modo local/mock)", value=default_api, placeholder="https://tu-api-go.onrender.com/simulate")
 
 with st.sidebar:
     st.header("Parámetros")
     rondas = st.number_input("Rondas", 1, 100, 5)
     timeout_s = st.number_input("Timeout por ronda (seg)", 0, 60, 2)
     nproc = st.number_input("N° de procesos", 1, 20, 3)
-    timeout_m = st.number_input("Timeout por ronda (min)", 0, 24, 2)
 
     st.caption("Parámetros por proceso")
     procesos = []
@@ -42,7 +42,7 @@ with st.sidebar:
 
 run = st.button("Ejecutar simulación")
 
-def run_local_mock(rondas:int, timeout_s:int, procesos:list, timeout_m:int):
+def run_local_mock(rondas:int, timeout_s:int, procesos:list):
     """Simula localmente la ejecución (sin API Go). Devuelve estructura parecida a la API."""
     resultados = []
     rng = random.Random(1234)
@@ -124,6 +124,64 @@ def run_local_mock(rondas:int, timeout_s:int, procesos:list, timeout_m:int):
         global_stats["p50Ms"] = perc(arr, 50)
         global_stats["p95Ms"] = perc(arr, 95)
     return {"resultados": resultados, "porProceso": porProceso, "global": global_stats}
+
+if run:
+    payload = {"rondas": int(rondas), "timeoutRondaS": int(timeout_s), "procesos": procesos}
+    if api_url.strip():
+        st.info(f"Llamando API: {api_url}")
+        try:
+            resp = requests.post(api_url.strip(), json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            st.error(f"Error con la API ({e}). Usando modo local/mock…")
+            data = run_local_mock(rondas, timeout_s, procesos)
+    else:
+        st.warning("API vacía: usando modo local/mock.")
+        data = run_local_mock(rondas, timeout_s, procesos)
+
+    df = pd.DataFrame(data.get("resultados", []))
+    if df.empty:
+        st.warning("Sin resultados.")
+    else:
+        st.subheader("Resultados por ronda")
+        df_view = df[["procesoId", "nombre", "ronda", "memoriaMB", "tiempoMs", "ok", "err"]]
+        st.dataframe(df_view, use_container_width=True)
+
+        st.subheader("Promedio por proceso (ms)")
+        ok_df = df[df["ok"]]
+        if not ok_df.empty:
+            avg_df = ok_df.groupby(["procesoId", "nombre"])["tiempoMs"].mean().reset_index()
+            fig1, ax1 = plt.subplots()
+            ax1.bar(avg_df["nombre"], avg_df["tiempoMs"])
+            ax1.set_xlabel("Proceso")
+            ax1.set_ylabel("Tiempo promedio (ms)")
+            ax1.set_title("Promedio por Proceso")
+            st.pyplot(fig1)
+
+            st.subheader("Tiempos por ronda (ms)")
+            fig2, ax2 = plt.subplots()
+            for name, sub in ok_df.groupby("nombre"):
+                ax2.plot(sub["ronda"], sub["tiempoMs"], marker="o", label=name)
+            ax2.set_xlabel("Ronda")
+            ax2.set_ylabel("Tiempo (ms)")
+            ax2.set_title("Evolución por Ronda")
+            ax2.legend()
+            st.pyplot(fig2)
+
+        st.subheader("Métricas")
+        por_proc = data.get("porProceso", {})
+        rows = []
+        for pid, stats in por_proc.items():
+            rows.append({"procesoId": int(pid), **stats})
+        if rows:
+            mdf = pd.DataFrame(rows).sort_values("procesoId")
+            st.dataframe(mdf, use_container_width=True)
+        g = data.get("global")
+        if g and g.get("count", 0) > 0:
+            st.success(f"GLOBAL → n={g['count']}  avg={g['avgMs']:.1f}ms  "
+                       f"p50={g['p50Ms']:.1f}ms  p95={g['p95Ms']:.1f}ms  "
+                       f"min={g['minMs']:.1f}ms  max={g['maxMs']:.1f}ms")
 import matplotlib.dates as mdates
 def plot_times(df):
     """Dibuja gráfico de tiempos por ronda."""
@@ -138,32 +196,3 @@ def plot_times(df):
     plt.legend(title="Proceso")
     plt.grid(True)
     st.pyplot(fig)
-def plot_histogram(df):
-    """Dibuja histograma de tiempos."""
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.hist(df['tiempoMs'], bins=20, color='skyblue', edgecolor='black')
-    plt.xlabel("Tiempo (ms)")
-    plt.ylabel("Frecuencia")
-    plt.title("Histograma en barra Tiempos")
-    plt.grid(True)
-    st.pyplot(fig)
-def plot_regresion(df):
-    """Dibuja gráfico de regresión (tiempo vs memoria)."""
-    import numpy as np
-    from sklearn.linear_model import LinearRegression
-    fig, ax = plt.subplots(figsize=(10, 4))
-    X = df['memoriaMB'].values.reshape(-1, 1)
-    y = df['tiempoMs'].values
-    model = LinearRegression()
-    model.fit(X, y)
-    y_pred = model.predict(X)
-    ax.scatter(df['memoriaMB'], df['tiempoMs'], color='blue', label='Datos')
-    ax.plot(df['memoriaMB'], y_pred, color='red', linewidth=2, label='Regresión')
-    plt.xlabel("Memoria Estimada (MB)")
-    plt.ylabel("Tiempo (ms)")
-    plt.title("Regresión Lineal: Tiempo vs Memoria")
-    plt.legend()
-    plt.grid(True)
-    st.pyplot(fig)
-
-
