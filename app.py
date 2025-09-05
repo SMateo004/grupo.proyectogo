@@ -25,6 +25,7 @@ with st.sidebar:
     rondas = st.number_input("Rondas", 1, 100, 5)
     timeout_s = st.number_input("Timeout por ronda (seg)", 0, 60, 2)
     nproc = st.number_input("N° de procesos", 1, 20, 3)
+    timeout_m = st.number_input("Timeout por ronda (min)", 0, 24, 2)
 
     st.caption("Parámetros por proceso")
     procesos = []
@@ -41,7 +42,7 @@ with st.sidebar:
 
 run = st.button("Ejecutar simulación")
 
-def run_local_mock(rondas:int, timeout_s:int, procesos:list):
+def run_local_mock(rondas:int, timeout_s:int, procesos:list, timeout_m:int):
     """Simula localmente la ejecución (sin API Go). Devuelve estructura parecida a la API."""
     resultados = []
     rng = random.Random(1234)
@@ -125,7 +126,7 @@ def run_local_mock(rondas:int, timeout_s:int, procesos:list):
     return {"resultados": resultados, "porProceso": porProceso, "global": global_stats}
 
 if run:
-    payload = {"rondas": int(rondas), "timeoutRondaS": int(timeout_s), "procesos": procesos}
+    payload = {"rondas": int(rondas), "timeoutRondaS": int(timeout_s), "procesos": procesos, "timeoutRondaS": int(timeout_m)}
     if api_url.strip():
         st.info(f"Llamando API: {api_url}")
         try:
@@ -134,10 +135,10 @@ if run:
             data = resp.json()
         except Exception as e:
             st.error(f"Error con la API ({e}). Usando modo local/mock…")
-            data = run_local_mock(rondas, timeout_s, procesos)
+            data = run_local_mock(rondas, timeout_s, procesos, timeout_m)
     else:
         st.warning("API vacía: usando modo local/mock.")
-        data = run_local_mock(rondas, timeout_s, procesos)
+        data = run_local_mock(rondas, timeout_s, procesos, timeout_m)
 
     df = pd.DataFrame(data.get("resultados", []))
     if df.empty:
@@ -155,6 +156,7 @@ if run:
             ax1.bar(avg_df["nombre"], avg_df["tiempoMs"])
             ax1.set_xlabel("Proceso")
             ax1.set_ylabel("Tiempo promedio (ms)")
+            ax1.set_ylabel("Tiempo promedio (m)")
             ax1.set_title("Promedio por Proceso")
             st.pyplot(fig1)
 
